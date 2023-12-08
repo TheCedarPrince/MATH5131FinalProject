@@ -1,0 +1,441 @@
+# Exploring Patient Treatment Pathways
+
+## Required PackEXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_births
+
+Here are the packEXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_births we will need for exploring patient pathways grouped by primary use cases in this exploration:
+
+- Interfacing with databases
+
+    * [`DBInterface.jl`](https://github.com/JuliaDatabases/DBInterface.jl) - Database interface definitions for Julia
+
+    * [`SQLite`](https://github.com/JuliaDatabases/SQLite.jl) - A Julia interface to the SQLite library
+
+- Health analytics built specifically for working with OMOP CDM databases
+
+    * [`OHDSICohortExpressions.jl`](https://github.com/MechanicalRabbit/OHDSICohortExpressions.jl) - Implementation of a conversion from the JSON cohort definitions used in the OHDSI ecosystem into an SQL transaction.
+
+    * [`OMOPCDMCohortCreator.jl`](https://github.com/JuliaHealth/OMOPCDMCohortCreator.jl) - Create cohorts from databases utilizing the OMOP CDM
+
+- General data analytics tools
+
+    * [`DataFrames.jl`](https://github.com/JuliaData/DataFrames.jl) - In-memory tabular data in Julia
+
+- Miscellaneous packEXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_births
+
+    * [`HealthSampleData.jl`](https://github.com/JuliaHealth/HealthSampleData.jl) - Sample health data for a variety of health formats and use cases
+
+    * [`Random`](https://docs.julialang.org/en/v1/stdlib/Random/#Random-Numbers) - Support for generating random numbers
+
+    * [`Base`] - Default libraries built into Julia
+
+## Interfacing with Synthetic OMOP CDM Database
+
+To start with, we will need to download a synthetic patient database in the OMOP CDM format called _Eunomia_.
+We can download it onto your computer from the `HealthSampleData.jl` packEXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth by executing the next cell:
+
+```julia
+import HealthSampleData: 
+    Eunomia
+
+ENV["DATADEPS_ALWAYS_ACCEPT"] = true
+eunomia = Eunomia()
+```
+
+Then, by passing the path of where the SQLite database is on your computer (given by the `Eunomia()` command), we can create a database connection to the database as follows:
+
+```julia
+using LibPQ
+using DBInterface
+
+conn = DBInterface.connect(LibPQ.Connection, "user=thecedarprince dbname=mimiciii")
+```
+
+## Constructing an Initial Patient Cohort
+
+Next, we can build a cohort of patients who match a phenotype definition of a disease.
+Any such definitions have been defined using the [ATLAS tool](https://atlas-demo.ohdsi.org) and these definitions can be transformed by `OHDSICohortExpressions.jl` into a SQL statement.
+We can read and pass a given definition to `OHDSICohortExpressions.jl` as follows:
+
+```julia
+# TODO: Change to diabetes cohort
+import OHDSICohortExpressions: 
+    translate, 
+    Model
+
+cohort_expression = read("supreme_dm.json", String)
+
+#= 
+
+This defines where patients matching our disease 
+definition get put.
+In this case, to the database schema called 
+"main" and the target table called "cohort"
+
+=#
+model = Model(cdm_version = v"5.3.1", 
+              cdm_schema = "omop",
+              vocabulary_schema = "omop", 
+              results_schema = "omop",
+              target_schema = "omop",
+              target_table = "cohort");
+
+#= 
+
+We execute our disease definition here against the 
+database and create a patient cohort 
+associated to the ID, 1.
+
+=#
+sql = translate(cohort_expression, 
+                dialect = :postgres, 
+                model = model,
+                cohort_definition_id = 3);
+```
+
+Taking the SQL that was prepared by `OHDSICohortExpressions.jl`, we can now construct our cohort of patients that match our particular definition of interest.
+We can do this using the packEXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth, `DBInterface`:
+
+```julia
+import DBInterface:
+    execute 
+
+for query in split(sql, ";")[1:end-1]
+    execute(conn, query)
+end
+```
+
+## Exploring the Patient Cohort with `OMOPCDMCohortCreator.jl`
+
+### Finding Patients Belonging To Our Cohort
+
+With database details defined, we can now fully explore the patient cohort we have defined using `OMOPCDMCohortCreator.jl` (I'll refer to this as `occ` from now on).
+This next cell performs all the set-up required by `occ` -- you'll see some informational messEXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_births pop up which means that this worked successfully:
+
+```julia
+import OMOPCDMCohortCreator as occ
+
+# Defines what kind of database occ is connecting to
+occ.GenerateDatabaseDetails(
+    :postgresql,
+    "omop"
+)
+
+#= 
+
+Generates internal representation of what tables are 
+available for occ to operate upon
+
+=#
+occ.GenerateTables(conn)
+```
+
+Now we can pull our cohort that matches our disease definition of interest from the database's `cohort` table and store it within a `DataFrame` using `DataFrames.jl`:
+
+```julia
+# TODO: Replace with OMOPCDMCohortCreator v0.3.1 when released
+import DataFrames as DF
+
+C = occ.GetCohortSubjects(3, conn)
+DF.rename!(C, "subject_id" =>"person_id")
+```
+
+### Initial Characterization of Our Cohort
+
+Now, we can choose what cofactors we want to explore within our population and iteratively build up the dataset we want to explore.
+In this case, we can build a dataset that characterizes over race, gender, and EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth group: 
+
+```julia
+C_race = occ.GetPatientRace(C.person_id, conn)
+C_gender = occ.GetPatientGender(C.person_id, conn)
+```
+
+Because MIMIC III uses an age shifting algorithm, we find age by applying this algorithm
+
+```julia
+sql = """
+      SELECT visit.person_id, 
+        CASE
+          WHEN EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth < 9 THEN '0 - 9'
+          WHEN EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth < 19 THEN '10 - 19'
+          WHEN EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth < 29 THEN '20 - 29'
+          WHEN EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth < 39 THEN '30 - 39'
+          WHEN EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth < 49 THEN '40 - 49'
+          WHEN EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth < 59 THEN '50 - 59'
+          WHEN EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth < 69 THEN '60 - 69'
+          WHEN EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth < 79 THEN '70 - 79'
+          WHEN EXTRACT(YEAR FROM MIN(visit_start_date)) - person.year_of_birth < 89 THEN '80 - 89'
+          ELSE '< 90'
+        END AS age_group
+      FROM 
+        omop.visit_occurrence AS visit 
+      JOIN 
+        omop.person AS person 
+      ON 
+        visit.person_id = person.person_id 
+      WHERE
+        person.person_id IN ($(join(C.person_id, ",")))
+      GROUP BY 
+        visit.person_id, person.year_of_birth;
+    """
+
+C_age_group = DBInterface.execute(conn, sql) |> DataFrame
+```
+
+We can group these factors together into one DataFrame:
+
+```julia
+C_characterized = DF.outerjoin(C_race,
+                               C_gender,
+                               C_age_group;
+                               on = :person_id, 
+                               matchmissing = :equal)
+```
+
+### Finding Pathways of Interest
+
+For this example workflow, we'll construct artificial pathways that can be used for a pseudo exploration of patient pathways.
+Here, the ordering of the pathway does not matter
+
+```julia
+import Base.Iterators:
+    product
+import Random:
+    MersenneTwister
+
+# Generating what initial medication paths we care about
+meds = ["P1", "P2"]
+
+#=
+    Generating all possible combinations of medication paths.
+    Here, I am not caring about ordering of a combination of 
+    medication paths.
+=#
+pathways = map(product(meds, meds, meds)) do med
+    unique(med) |> sort |> x -> join(x, ',')
+end |> unique 
+```
+
+Now, we can choose random assignments for what path belong to what patient:
+
+```julia
+C_characterized.paths = rand(
+                             MersenneTwister(123), 
+                             pathways, 
+                             length(C_characterized.person_id)
+                            )
+```
+
+### Characterizing across Patient Pathways
+
+Finally, we can now fully characterize across all patients with our fake patient pathways after we remove any identifying information:
+
+```julia
+C_characterized = C_characterized[:, DF.Not(:person_id)]
+C_groups = DF.groupby(
+                      C_characterized, 
+                      [
+                        :race_concept_id, 
+                        :gender_concept_id, 
+                        :age_group
+                      ]
+                     )
+C_groups = DF.combine(C_groups, DF.nrow => :count)
+```
+
+function GetDrugExposureStartDate(
+    drug_exposure_ids;
+    tab = drug_exposure
+)
+
+    sql =
+        From(tab) |>
+        Where(Fun.in(Get.drug_exposure_id, drug_exposure_ids...)) |>
+        Select(Get.drug_exposure_id, Get.drug_exposure_start_date) |>
+        q -> render(q, dialect=dialect)
+
+    return String(sql)
+
+end
+
+function GetDrugExposureStartDate(
+    drug_exposure_ids,
+    conn;
+    tab = drug_exposure 
+)
+
+    df = DBInterface.execute(conn, GetDrugExposureStartDate(drug_exposure_ids; tab=tab)) |> DataFrame
+
+    return df
+end
+
+function GetDrugExposureEndDate(
+    drug_exposure_ids;
+    tab = drug_exposure
+)
+
+    sql =
+        From(tab) |>
+        Where(Fun.in(Get.drug_exposure_id, drug_exposure_ids...)) |>
+        Select(Get.drug_exposure_id, Get.drug_exposure_end_date) |>
+        q -> render(q, dialect=dialect)
+
+    return String(sql)
+
+end
+
+function GetDrugExposureEndDate(
+    drug_exposure_ids,
+    conn;
+    tab = drug_exposure 
+)
+
+    df = DBInterface.execute(conn, GetDrugExposureEndDate(drug_exposure_ids; tab=tab)) |> DataFrame
+
+    return df
+end
+
+Pull the cohort:
+
+```julia
+using OMOPCDMCohortCreator
+import DataFrames as DF
+
+# C represents the cohort
+C = GetCohortSubjects(3, conn)
+```
+
+Get the cohort end and start dates per subject:
+
+```julia
+C_start = GetCohortSubjectStartDate(3, C.subject_id, conn)
+C_end = GetCohortSubjectEndDate(3, C.subject_id, conn)
+```
+
+Find drug exposures per patient:
+
+```julia
+C_drug_exposures = occ.GetDrugExposureIDs(C.subject_id, conn)
+C_drug_concept_id = occ.GetDrugConceptIDs(C_drug_exposures.drug_exposure_id, conn)
+```
+
+Find drug exposure times:
+
+```julia
+C_drug_exposure_start = GetDrugExposureStartDate(C_drug_exposures.drug_exposure_id, conn)
+C_drug_exposure_end = GetDrugExposureEndDate(C_drug_exposures.drug_exposure_id, conn)
+```
+
+Combine dataframe together:
+
+```julia
+C = DF.outerjoin(C,
+                 C_start[:, Not(:cohort_definition_id)],
+                 C_end[:, Not(:cohort_definition_id)];
+                 on = :subject_id, 
+                 matchmissing = :equal)
+
+C_drugs = outerjoin(C_drug_exposures,
+                    C_drug_concept_id,
+                    C_drug_exposure_start,
+                    C_drug_exposure_end,
+                    on = :drug_exposure_id,
+                    matchmissing = :equal)
+
+rename!(C, "subject_id" => "person_id")
+C_meds = outerjoin(C, C_drugs; on = :person_id, matchmissing = :equal)
+```
+
+Next, filter dataframe to find what drug exposures fall into the cohort period
+
+```julia
+using Dates
+
+C_meds.cohort_start_date = C_meds.cohort_start_date .|> unix2datetime
+C_meds.cohort_end_date = C_meds.cohort_end_date .|> unix2datetime
+C_meds.drug_exposure_start_date = C_meds.drug_exposure_start_date .|> unix2datetime
+C_meds.drug_exposure_end_date = C_meds.drug_exposure_end_date .|> unix2datetime
+
+filter!(row -> ismissing(row.cohort_start_date) || ismissing(row.drug_exposure_start_date) || ismissing(row.cohort_end_date) ? false : row.cohort_start_date <= row.drug_exposure_start_date <= row.cohort_end_date, C_meds)
+```
+
+Update end dates:
+
+```julia
+C_meds.drug_exposure_end_date = map(eachrow(C_meds)) do row
+    if ismissing(row.drug_exposure_end_date)
+        row.cohort_end_date
+    elseif row.drug_exposure_end_date <= row.cohort_end_date
+        row.drug_exposure_end_date
+    else
+        row.cohort_end_date
+    end
+end
+```
+
+Simplify dataframe for processing
+
+```julia
+C_meds = C_meds[:, Not([:cohort_definition_id, :drug_exposure_id])]
+```
+
+Find treatment pathways irrespective of when medication is received:
+
+```julia
+gdf = groupby(C_meds, :person_id)
+pathways = []
+
+for g in gdf
+    push!(pathways, unique(g.drug_concept_id))
+end
+
+unique!(pathways)
+
+
+for 
+```
+
+```julia
+C_final = DF.outerjoin(C_meds,
+                 C_race,
+                 C_gender,
+                 C_age_group,
+                 on = :person_id, 
+                 matchmissing = :equal)
+C_dm = deepcopy(C_final) |> dropmissing!
+filter!(row -> in(row.drug_concept_id, dm_drugs), C_dm)
+```
+
+```julia
+gdf = groupby(C_dm, :person_id)
+pathways = []
+
+for g in gdf
+    push!(pathways, unique(g.drug_concept_id))
+end
+
+unique!(pathways)
+
+pathways_dict = Dict(p => [] for p in pathways)
+for g in gdf
+    for person in g.person_id
+        push!(pathways_dict[unique(g.drug_concept_id)], person)
+    end
+end
+```
+
+```julia
+C_dm_1 = C_dm[:, Not([:cohort_start_date, 
+             :cohort_end_date, 
+             :drug_concept_id, 
+             :drug_exposure_start_date, 
+             :drug_exposure_end_date]
+           )] |> unique
+
+pathways_locs = [[] for i in 1:length(C_dm_1.person_id)]
+for pathway in keys(pathways_dict)
+    for patient in pathways_dict[pathway]
+        idx = findfirst(id -> id == patient, C_dm_1.person_id)
+        pathways_locs[idx] = pathway
+    end
+end
+```

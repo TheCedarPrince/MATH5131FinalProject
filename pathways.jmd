@@ -1,0 +1,184 @@
+# Exploring Patient Treatment Pathways
+
+## Required Packages
+
+Here are the packages we will need for exploring patient pathways grouped by primary use cases in this exploration:
+
+- Interfacing with databases
+
+    * [`DBInterface.jl`](https://github.com/JuliaDatabases/DBInterface.jl) - Database interface definitions for Julia
+
+    * [`SQLite`](https://github.com/JuliaDatabases/SQLite.jl) - A Julia interface to the SQLite library
+
+- Health analytics built specifically for working with OMOP CDM databases
+
+    * [`OHDSICohortExpressions.jl`](https://github.com/MechanicalRabbit/OHDSICohortExpressions.jl) - Implementation of a conversion from the JSON cohort definitions used in the OHDSI ecosystem into an SQL transaction.
+
+    * [`OMOPCDMCohortCreator.jl`](https://github.com/JuliaHealth/OMOPCDMCohortCreator.jl) - Create cohorts from databases utilizing the OMOP CDM
+
+- General data analytics tools
+
+    * [`DataFrames.jl`](https://github.com/JuliaData/DataFrames.jl) - In-memory tabular data in Julia
+
+- Miscellaneous packages
+
+    * [`HealthSampleData.jl`](https://github.com/JuliaHealth/HealthSampleData.jl) - Sample health data for a variety of health formats and use cases
+
+    * [`Random`](https://docs.julialang.org/en/v1/stdlib/Random/#Random-Numbers) - Support for generating random numbers
+
+## Interfacing with Synthetic OMOP CDM Database
+
+To start with, we will need to download a synthetic patient database in the OMOP CDM format called _Eunomia_.
+We can download it onto your computer from the `HealthSampleData.jl` package by executing the next cell. 
+Make sure to follow all the prompts:
+
+```julia
+import HealthSampleData: 
+    Eunomia
+
+eunomia = Eunomia()
+```
+
+Then, by passing the path of where the SQLite database is on your computer (given by the `Eunomia()` command), we can create a database connection to the database as follows:
+
+```julia
+import SQLite:
+    DB
+
+conn = DB(eunomia);
+```
+
+## Constructing an Initial Patient Cohort
+
+Next, we can build a cohort of patients who match a phenotype definition of a disease.
+Any such definitions have been defined using the [ATLAS tool](https://atlas-demo.ohdsi.org) and these definitions can be transformed by `OHDSICohortExpressions.jl` into a SQL statement.
+We can read and pass a given definition to `OHDSICohortExpressions.jl` as follows:
+
+```julia
+# TODO: Change to diabetes cohort
+import OHDSICohortExpressions: 
+    translate, 
+    Model
+
+cohort_expression = read("strep_throat.json", String)
+
+#= 
+
+This defines where patients matching our disease 
+definition get put.
+In this case, to the database schema called 
+"main" and the target table called "cohort"
+
+=#
+model = Model(cdm_version = v"5.3.1", 
+              cdm_schema = "main",
+              vocabulary_schema = "main", 
+              results_schema = "main",
+              target_schema = "main",
+              target_table = "cohort");
+
+#= 
+
+We execute our disease definition here against the 
+database and create a patient cohort 
+associated to the ID, 1.
+
+=#
+sql = translate(cohort_expression, 
+                dialect = :sqlite, 
+                model = model,
+                cohort_definition_id = 1);
+```
+
+Taking the SQL that was prepared by `OHDSICohortExpressions.jl`, we can now construct our cohort of patients that match our particular definition of interest.
+We can do this using the package, `DBInterface`:
+
+```julia
+import DBInterface:
+    execute 
+
+for query in split(sql, ";")[1:end-1]
+    execute(conn, query)
+end
+```
+
+## Exploring the Patient Cohort with `OMOPCDMCohortCreator.jl`
+
+### Finding Patients Belonging To Our Cohort
+
+With database details defined, we can now fully explore the patient cohort we have defined using `OMOPCDMCohortCreator.jl` (I'll refer to this as `occ` from now on).
+This next cell performs all the set-up required by `occ` -- you'll see some informational messages pop up which means that this worked successfully:
+
+```julia
+import OMOPCDMCohortCreator as occ
+
+# Defines what kind of database occ is connecting to
+occ.GenerateDatabaseDetails(
+    :sqlite,
+    "main"
+)
+
+#= 
+
+Generates internal representation of what tables are 
+available for occ to operate upon
+
+=#
+occ.GenerateTables(conn)
+```
+
+Now we can pull our cohort that matches our disease definition of interest from the database's `cohort` table and store it within a `DataFrame` using `DataFrames.jl`:
+
+```julia
+import DataFrames as DF
+
+query_results = execute(conn, 
+    """
+    SELECT 
+        subject_id AS person_id 
+    FROM 
+        cohort 
+    WHERE 
+        cohort_definition_id = 1;
+    """) 
+
+# C represents the cohort
+C = DF.DataFrame(query_results)
+```
+
+### Initial Characterization of Our Cohort
+
+Characterizing cohort by various cofactors
+
+```julia
+C_race = occ.GetPatientRace(C.person_id, conn)
+C_gender = occ.GetPatientGender(C.person_id, conn)
+C_age_group = occ.GetPatientAgeGroup(C.person_id, conn) 
+```
+
+Grouping cohort together based on cofactors and removing identifiers
+
+```julia
+C_characterized = DF.outerjoin(C_race,
+                               C_gender,
+                               C_age_group;
+                               on = :person_id, 
+                               matchmissing = :equal)
+```
+
+### Finding Pathways of Interest
+
+Constructing fake pathways that can be used for exploration purposes and added to the dataframe
+
+```
+pathways = ["P1", "P2", "P3", "P4", "P5"]
+
+cohort_characterized.paths = rand(MersenneTwister(123), pathways, length(cohort_characterized.person_id))
+```
+
+```
+cohort_characterized = cohort_characterized[:, DF.Not(:person_id)]
+# cohort_groups = DF.groupby(cohort_characterized, [:race_concept_id, :gender_concept_id, :age_group, :paths])
+cohort_groups = DF.groupby(cohort_characterized, [:race_concept_id, :gender_concept_id, :age_group])
+cohort_groups = DF.combine(cohort_groups, DF.nrow => :count)
+```
